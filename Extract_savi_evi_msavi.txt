@@ -1,0 +1,76 @@
+// ==============================
+// 1. Fungsi Masking Awan
+// ==============================
+function maskS2clouds(image) {
+  var qa = image.select('QA60');
+  var cloudBitMask = 1 << 10;
+  var cirrusBitMask = 1 << 11;
+  var mask = qa.bitwiseAnd(cloudBitMask).eq(0)
+                .and(qa.bitwiseAnd(cirrusBitMask).eq(0));
+  return image.updateMask(mask).divide(10000);
+}
+
+// ==============================
+// 2. Fungsi Indeks
+// ==============================
+function addIndices(image) {
+  var nir = image.select('B8');
+  var red = image.select('B4');
+  var blue = image.select('B2');
+  var swir = image.select('B11');
+
+  var savi = nir.subtract(red)
+                .multiply(1.5)
+                .divide(nir.add(red).add(0.5))
+                .rename('SAVI');
+
+  var evi = nir.subtract(red)
+               .multiply(2.5)
+               .divide(nir.add(red.multiply(6)).subtract(blue.multiply(7.5)).add(1))
+               .rename('EVI');
+
+  var msavi = nir.multiply(2)
+                 .add(1)
+                 .subtract(nir.multiply(2).add(1).pow(2)
+                 .subtract(nir.subtract(red).multiply(8)).sqrt())
+                 .divide(2)
+                 .rename('MSAVI');
+
+  return image.addBands([savi, evi, msavi]);
+}
+
+// ==============================
+// 3. Load Dataset
+// ==============================
+var s2 = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+           .filterDate('2021-01-01', '2021-12-31')
+           .filterBounds(points)
+           .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+           .map(maskS2clouds)
+           .map(addIndices);
+
+var finalImage = s2.median().clip(points);
+
+// ==============================
+// 4. Statistik Zonal
+// ==============================
+var stats1 = finalImage.select(['SAVI', 'EVI', 'MSAVI'])
+  .reduceRegions({
+    collection: points,
+    reducer: ee.Reducer.mean()
+              .combine(ee.Reducer.median(), '', true)
+              .combine(ee.Reducer.stdDev(), '', true),
+    scale: 30,
+    crs: 'EPSG:4326'
+  });
+
+// ==============================
+// 5. Export
+// ==============================
+Export.table.toDrive({
+  collection: stats1,
+  description: 'Zonal_Stats_SAVI_EVI_MSAVI_2021',
+  folder: 'EarthEngineExports',
+  fileNamePrefix: 'ZonalStats_2021_3Index',
+  fileFormat: 'CSV'
+});

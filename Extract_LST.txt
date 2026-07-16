@@ -1,0 +1,77 @@
+// =======================================
+// Definisikan wilayah Indonesia
+// =======================================
+var region = ee.FeatureCollection("FAO/GAUL/2015/level0")
+  .filter(ee.Filter.eq('ADM0_NAME', 'Indonesia'))
+  .geometry();
+
+// =======================================
+// Fungsi Masking Awan, Shadow, Snow
+// =======================================
+function maskL8L9sr(image) {
+  var qa = image.select('QA_PIXEL');
+  
+  // Bit flags
+  var cloudShadowBitMask = 1 << 3; // Cloud Shadow
+  var cloudsBitMask = 1 << 4;      // Cloud
+  var snowBitMask = 1 << 5;         // Snow
+  
+  // Masking area clear (bukan awan, shadow, atau snow)
+  var mask = qa.bitwiseAnd(cloudShadowBitMask).eq(0)
+               .and(qa.bitwiseAnd(cloudsBitMask).eq(0))
+               .and(qa.bitwiseAnd(snowBitMask).eq(0));
+  
+  return image.updateMask(mask);
+}
+
+// =======================================
+// Fungsi Hitung LST dari ST_B10
+// =======================================
+function calculateLST(image) {
+  var kelvin = image.select('ST_B10')
+                    .multiply(0.00341802)
+                    .add(149.0);
+  var celsius = kelvin.subtract(273.15).rename('LST');
+  
+  // Masking LST ekstrem (tropis normal: 10°C - 60°C)
+  var cleanLST = celsius.updateMask(celsius.gte(10).and(celsius.lte(60)));
+  
+  return cleanLST.copyProperties(image, ['system:time_start']);
+}
+
+// =======================================
+// Ambil Koleksi Citra Landsat 8/9
+// =======================================
+var collection = ee.ImageCollection('LANDSAT/LC08/C02/T1_L2')
+    .merge(ee.ImageCollection('LANDSAT/LC09/C02/T1_L2'))
+    .filterBounds(region)
+    .filterDate('2023-01-01', '2023-12-31')
+    .filter(ee.Filter.lt('CLOUD_COVER', 10))
+    .map(maskL8L9sr)       // Masking awan, shadow, snow
+    .map(calculateLST);    // Hitung LST dan masking ekstrem
+
+// =======================================
+// Hitung Median LST
+// =======================================
+var lst2023 = collection.median().clip(region);
+
+// =======================================
+// Tampilkan di Peta
+// =======================================
+Map.centerObject(region, 5);
+Map.addLayer(lst2023, {min: 20, max: 40, palette: ['blue', 'green', 'yellow', 'red']}, 'Cleaned LST 2023');
+
+// =======================================
+// Ekspor ke Drive
+// =======================================
+Export.image.toDrive({
+  image: lst2023,
+  description: 'Cleaned_LST_Indonesia_2023',
+  folder: 'GEE_Exports', // optional: simpan di folder khusus
+  fileNamePrefix: 'cleaned_LST_2023',
+  scale: 1000,
+  region: region,
+  crs: 'EPSG:4326',
+  fileFormat: 'GeoTIFF',
+  maxPixels: 1e13
+});

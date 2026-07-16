@@ -1,0 +1,75 @@
+// =======================================
+// 1. Fungsi Masking Awan Sentinel-2 SR
+// =======================================
+function maskS2clouds(image) {
+  var qa = image.select('QA60');
+  var cloudBitMask = 1 << 10;
+  var cirrusBitMask = 1 << 11;
+  var mask = qa.bitwiseAnd(cloudBitMask).eq(0)
+                .and(qa.bitwiseAnd(cirrusBitMask).eq(0));
+  return image.updateMask(mask).divide(10000);
+}
+
+// =======================================
+// 2. Fungsi Hitung HANYA DDI
+// =======================================
+function addDDI(image) {
+  var nir = image.select('B8');
+  var red = image.select('B4');
+  var green = image.select('B3');
+  var swir = image.select('B11');
+
+  var ndvi = nir.subtract(red).divide(nir.add(red));
+  var ndbi = swir.subtract(nir).divide(swir.add(nir));
+  var ddi  = ndbi.subtract(ndvi).divide(ndbi.add(ndvi)).rename('DDI');
+
+  // Mask DDI lebih luas: -5 s/d 5
+  ddi = ddi.updateMask(ddi.gte(-3).and(ddi.lte(3)));
+
+  return image.addBands(ddi);
+}
+
+// =======================================
+// 3. Loop Per Tahun, Merge Jadi 1 Collection
+// =======================================
+var years = [2021, 2022, 2023, 2024];
+var merged = ee.FeatureCollection([]);
+
+years.forEach(function(year) {
+  
+  var s2 = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+            .filterDate(year + '-01-01', year + '-12-31')
+            .filterBounds(points)
+            .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+            .map(maskS2clouds)
+            .map(addDDI);
+
+  var sent = s2.median().clip(points);
+
+  var stats = sent.select('DDI').reduceRegions({
+    collection: points,
+    reducer: ee.Reducer.mean(),
+    scale: 30,
+    crs: 'EPSG:4326'
+  });
+
+  // Tambahkan property tahun
+  stats = stats.map(function(f) {
+    return f.set('year', year);
+  });
+
+  // Gabung ke merged collection
+  merged = merged.merge(stats);
+
+});
+
+// =======================================
+// 4. Export Semua Tahun Sekali Jalan
+// =======================================
+Export.table.toDrive({
+  collection: merged,
+  description: 'Zonal_Stats_DDI_2021_2024',
+  folder: 'EarthEngineExports',
+  fileNamePrefix: 'ZonalStats_DDI_2021_2024',
+  fileFormat: 'CSV'
+});

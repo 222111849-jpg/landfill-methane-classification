@@ -1,0 +1,55 @@
+// ==========================================
+// 1. Load Titik TPA yang sudah di-buffer
+// ==========================================
+Map.addLayer(points, {}, 'TPA Buffered');
+
+// ==========================================
+// 2. Definisikan rentang waktu
+// ==========================================
+var startDate = '2022-01-01';
+var endDate = '2022-12-31';
+
+// ==========================================
+// 3. Ambil data AOD dari MODIS Terra + Aqua (MCD19A2)
+// ==========================================
+var aodCollection = ee.ImageCollection('MODIS/061/MCD19A2_GRANULES')
+                      .filterDate(startDate, endDate)
+                      .filterBounds(points)
+                      .select('Optical_Depth_047'); // atau bisa pakai 'AOD' atau 'Optical_Depth_055'
+
+// ==========================================
+// 4. Hitung median dan klip ke wilayah TPA
+// ==========================================
+var aodMedian = aodCollection.median().rename('AOD').clip(points);
+
+Map.centerObject(points, 9);
+Map.addLayer(aodMedian, {
+  min: 0,
+  max: 0.5,
+  palette: ['white', 'yellow', 'orange', 'red']
+}, 'Median AOD');
+
+// ==========================================
+// 5. Statistik zonal (mean, median, std dev, dll.)
+// ==========================================
+var reducer = ee.Reducer.mean()
+                .combine(ee.Reducer.median(), '', true)
+                .combine(ee.Reducer.stdDev(), '', true);
+
+var zonalStats = aodMedian.reduceRegions({
+  collection: points,
+  reducer: reducer,
+  scale: 4000,
+  crs: 'EPSG:4326'
+});
+
+// ==========================================
+// 6. Export hasilnya ke Google Drive (CSV)
+// ==========================================
+Export.table.toDrive({
+  collection: zonalStats,
+  description: 'ZonalStats_AOD_TPA',
+  folder: 'EarthEngineExports',
+  fileNamePrefix: 'AOD_TPA_2022',
+  fileFormat: 'CSV'
+});

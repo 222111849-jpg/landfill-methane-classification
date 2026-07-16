@@ -1,0 +1,72 @@
+// Load data Sentinel-5P TROPOMI (CH4)
+var ch4 = ee.ImageCollection("COPERNICUS/S5P/OFFL/L3_CH4")
+  .select("CH4_column_volume_mixing_ratio_dry_air")
+  .filterDate("2020-01-01", "2023-12-31");
+
+// Load boundary provinsi Indonesia
+var indonesia = ee.FeatureCollection("FAO/GAUL/2015/level1")
+  .filter(ee.Filter.eq("ADM0_NAME", "Indonesia"));
+
+// Fungsi untuk menghitung rata-rata CH4 per tahun dan menambah layer ke peta
+var addYearlyCH4Layer = function(year) {
+  var start = ee.Date.fromYMD(year, 1, 1);
+  var end = ee.Date.fromYMD(year, 12, 31);
+
+  var yearlyCH4 = ch4.filterDate(start, end).mean();
+
+  var visParams = {
+    min: 1.7e-6,
+    max: 1.95e-6,
+    palette: ["blue", "cyan", "green", "yellow", "red"]
+  };
+
+  Map.addLayer(yearlyCH4, visParams, "CH4 " + year);
+};
+
+// List tahun yang mau dianalisis
+var years = ee.List.sequence(2020, 2023);
+var yearsList = years.getInfo();  // Convert ke array client-side
+
+// Loop untuk menambahkan layer ke peta
+yearsList.forEach(function(year) {
+  addYearlyCH4Layer(year);
+});
+
+// Tambahkan batas provinsi
+Map.addLayer(indonesia.style({color: "black", width: 1}), {}, "Provinsi Indonesia");
+
+// Atur tampilan peta
+Map.setCenter(113, -2, 5);
+
+// Fungsi untuk menghitung rata-rata CH4 per provinsi per tahun
+var getYearlyMean = function(year) {
+  var start = ee.Date.fromYMD(year, 1, 1);
+  var end = ee.Date.fromYMD(year, 12, 31);
+  
+  var yearlyCH4 = ch4.filterDate(start, end).mean();
+
+  var stats = yearlyCH4.reduceRegions({
+    collection: indonesia,
+    reducer: ee.Reducer.mean(),
+    scale: 5000,  // Resolusi TROPOMI (7 km)
+  }).map(function(f) {
+    return f.set("year", year);
+  });
+
+  return stats;
+};
+
+// Gabungkan hasil dari semua tahun
+var yearlyResults = ee.FeatureCollection(years.iterate(function(year, prev) {
+  return ee.FeatureCollection(prev).merge(getYearlyMean(year));
+}, ee.FeatureCollection([])));
+
+// Cek di console apakah formatnya benar
+print("Hasil rata-rata CH4 per tahun per provinsi:", yearlyResults);
+
+// Export hasil ke Google Drive sebagai CSV
+Export.table.toDrive({
+  collection: yearlyResults,
+  description: "CH4_Annual_Average_Indonesia",
+  fileFormat: "CSV"
+});

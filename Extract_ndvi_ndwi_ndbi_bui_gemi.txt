@@ -1,0 +1,102 @@
+// =======================================
+// 1. Fungsi Masking Awan Sentinel-2 SR
+// =======================================
+function maskS2clouds(image) {
+  var qa = image.select('QA60');
+  var cloudBitMask = 1 << 10;
+  var cirrusBitMask = 1 << 11;
+  var mask = qa.bitwiseAnd(cloudBitMask).eq(0)
+                .and(qa.bitwiseAnd(cirrusBitMask).eq(0));
+  return image.updateMask(mask).divide(10000); // Skala 0–1
+}
+
+// =======================================
+// 2. Fungsi Hitung dan Masking Indeks
+// =======================================
+function addIndices(image) {
+  var nir = image.select('B8');
+  var red = image.select('B4');
+  var green = image.select('B3');
+  var swir = image.select('B11');
+
+  var ndvi = nir.subtract(red).divide(nir.add(red)).rename('NDVI');
+  var ndwi = green.subtract(nir).divide(green.add(nir)).rename('NDWI');
+  var ndbi = swir.subtract(nir).divide(swir.add(nir)).rename('NDBI');
+  var bui  = ndbi.subtract(ndvi).rename('BUI');
+  var ddi  = ndbi.subtract(ndvi).divide(ndbi.add(ndvi)).rename('DDI');
+
+  // ===== PERBAIKAN FORMULA GEMI =====
+  var two = ee.Image.constant(2);
+  var onePointFive = ee.Image.constant(1.5);
+  var zeroPointFive = ee.Image.constant(0.5);
+  var zeroPointOneTwoFive = ee.Image.constant(0.125);
+  var zeroPointTwoFive = ee.Image.constant(0.25);
+  var one = ee.Image.constant(1);
+
+  var eta = nir.pow(2).multiply(two)
+             .subtract(red.pow(2).multiply(two))
+             .add(nir.multiply(onePointFive))
+             .add(red.multiply(zeroPointFive))
+             .divide(nir.add(red).add(zeroPointFive));
+
+  var gemi = eta.multiply(one.subtract(eta.multiply(zeroPointTwoFive)))
+                .subtract(red.multiply(zeroPointOneTwoFive)
+                .divide(nir.add(red).add(zeroPointFive)))
+                .rename('GEMI');
+
+  // ===== MASKING NILAI-NILAI ANOMALI =====
+  ndvi = ndvi.updateMask(ndvi.gte(-0.4).and(ndvi.lte(1)));
+  ndwi = ndwi.updateMask(ndwi.gte(-1).and(ndwi.lte(1)));
+  ndbi = ndbi.updateMask(ndbi.gte(-1).and(ndbi.lte(1)));
+  bui  = bui.updateMask(bui.gte(-2).and(bui.lte(2)));
+  ddi  = ddi.updateMask(ddi.gte(-1).and(ddi.lte(1)));
+  gemi = gemi.updateMask(gemi.gte(-1).and(gemi.lte(1)));
+
+  return image.addBands([ndvi, ndwi, ndbi, bui, ddi, gemi]);
+}
+
+// =======================================
+// 3. Load Dataset Sentinel-2
+// =======================================
+var s2 = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+           .filterDate('2024-01-01', '2024-12-30')
+           .filterBounds(points)
+           .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+           .map(maskS2clouds)
+           .map(addIndices);
+
+// =======================================
+// 4. Median Image untuk hilangkan noise
+// =======================================
+var sent = s2.median().clip(points);
+
+// =======================================
+// 5. Gabungkan Data
+// =======================================
+var finalImage = sent;
+
+// =======================================
+// 6. Hitung Statistik Zonal (mean, median, stdDev)
+// =======================================
+var stats = finalImage.select([
+  'NDVI', 'NDWI', 'NDBI', 'BUI', 'DDI', 'GEMI'
+]).reduceRegions({
+  collection: points,
+  reducer: ee.Reducer.mean()
+            .combine(ee.Reducer.median(), '', true)
+            .combine(ee.Reducer.stdDev(), '', true),
+  scale: 30,
+  crs: 'EPSG:4326'
+});
+
+
+// =======================================
+// 7. Export ke Google Drive
+// =======================================
+Export.table.toDrive({
+  collection: stats,
+  description: 'Zonal_Stats_NDVI_NDWI_NDBI_BUI_DDI_GEMI',
+  folder: 'EarthEngineExports',
+  fileNamePrefix: 'ZonalStats_2024_392item',
+  fileFormat: 'CSV'
+});

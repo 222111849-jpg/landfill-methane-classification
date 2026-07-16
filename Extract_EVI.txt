@@ -1,0 +1,79 @@
+// =======================================
+// 1. Fungsi Masking Awan Sentinel-2 SR
+// =======================================
+function maskS2clouds(image) {
+  var qa = image.select('QA60');
+  var cloudBitMask = 1 << 10;
+  var cirrusBitMask = 1 << 11;
+  var mask = qa.bitwiseAnd(cloudBitMask).eq(0)
+                .and(qa.bitwiseAnd(cirrusBitMask).eq(0));
+  return image.updateMask(mask).divide(10000); // Skala 0–1
+}
+
+// =======================================
+// 2. Fungsi Tambah & Bersihkan EVI
+// =======================================
+function addAndCleanEVI(image) {
+  var nir = image.select('B8');
+  var red = image.select('B4');
+  var blue = image.select('B2');
+
+  var evi = nir.subtract(red)
+               .multiply(2.5)
+               .divide(nir.add(red.multiply(6))
+                          .subtract(blue.multiply(7.5))
+                          .add(1))
+               .rename('EVI');
+  
+  var cleanEVI = evi.updateMask(evi.gte(-0.1).and(evi.lte(1)));
+
+  return image.addBands(cleanEVI);
+}
+
+// =======================================
+// 3. List Tahun yang Diproses
+// =======================================
+var tahunList = [2021, 2022, 2023, 2024];
+
+// =======================================
+// 4. Loop untuk Setiap Tahun
+// =======================================
+var listStats = tahunList.map(function(tahun) {
+  
+  var s2 = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+              .filterDate(tahun + '-01-01', tahun + '-12-31')
+              .filterBounds(points)
+              .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+              .map(maskS2clouds)
+              .map(addAndCleanEVI);
+  
+  var eviImage = s2.select('EVI').median().clip(points);
+  
+  var stats = eviImage.reduceRegions({
+    collection: points,
+    reducer: ee.Reducer.mean(),
+    scale: 30,
+    crs: 'EPSG:4326'
+  }).map(function(f) {
+    return f.set('tahun', tahun);
+  });
+  
+  return stats;
+});
+
+// =======================================
+// 5. Merge Semua Tahun Jadi Satu
+// =======================================
+var mergedStats = ee.FeatureCollection(listStats).flatten();
+
+// =======================================
+// 6. Export ke Google Drive
+// =======================================
+Export.table.toDrive({
+  collection: mergedStats,
+  description: 'Zonal_Stats_2021_2024_EVI_Cleaned',
+  folder: 'EarthEngineExports',
+  fileNamePrefix: 'ZonalStats_2021_2024_EVI_Clean',
+  fileFormat: 'CSV'
+});
+

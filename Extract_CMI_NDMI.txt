@@ -1,0 +1,68 @@
+// ==============================
+// 1. Fungsi Masking Awan
+// ==============================
+function maskS2clouds(image) {
+  var qa = image.select('QA60');
+  var cloudBitMask = 1 << 10;
+  var cirrusBitMask = 1 << 11;
+  var mask = qa.bitwiseAnd(cloudBitMask).eq(0)
+                .and(qa.bitwiseAnd(cirrusBitMask).eq(0));
+  return image.updateMask(mask).divide(10000);
+}
+
+// ==============================
+// 2. Fungsi Indeks
+// ==============================
+function addIndices(image) {
+  var nir = image.select('B8');
+  var red = image.select('B4');
+  var swir = image.select('B11');
+  var green = image.select('B3');
+
+  var cmi = red.multiply(-1).add(green.multiply(0.681))
+               .add(nir.multiply(0.257))
+               .add(swir.multiply(0.062))
+               .rename('CMI');
+
+  var ndmi = nir.subtract(swir)
+                .divide(nir.add(swir))
+                .rename('NDMI');
+
+  return image.addBands([cmi, ndmi]);
+}
+
+// ==============================
+// 3. Load Dataset
+// ==============================
+var s2 = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+           .filterDate('2021-01-01', '2021-12-31')
+           .filterBounds(points)
+           .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+           .map(maskS2clouds)
+           .map(addIndices);
+
+var finalImage = s2.median().clip(points);
+
+// ==============================
+// 4. Statistik Zonal
+// ==============================
+var stats2 = finalImage.select(['CMI', 'NDMI'])
+  .reduceRegions({
+    collection: points,
+    reducer: ee.Reducer.mean()
+              .combine(ee.Reducer.median(), '', true)
+              .combine(ee.Reducer.stdDev(), '', true),
+    scale: 30,
+    crs: 'EPSG:4326'
+  });
+
+// ==============================
+// 5. Export
+// ==============================
+Export.table.toDrive({
+  collection: stats2,
+  description: 'Zonal_Stats_CMI_NDMI_2021',
+  folder: 'EarthEngineExports',
+  fileNamePrefix: 'ZonalStats_2021_2Index',
+  fileFormat: 'CSV'
+});

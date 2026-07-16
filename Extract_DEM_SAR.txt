@@ -1,0 +1,71 @@
+
+// ==============================
+// 1. Fungsi Masking Awan (opsional untuk Sentinel-2)
+// ==============================
+function maskS2clouds(image) {
+  var qa = image.select('QA60');
+  var cloudBitMask = 1 << 10;
+  var cirrusBitMask = 1 << 11;
+  var mask = qa.bitwiseAnd(cloudBitMask).eq(0)
+                  .and(qa.bitwiseAnd(cirrusBitMask).eq(0));
+  return image.updateMask(mask).divide(10000);
+}
+
+// ==============================
+// 2. Citra DEM (SRTM 30 m)
+// ==============================
+var dem = ee.Image('USGS/SRTMGL1_003')
+             .select('elevation')
+             .rename('Elevation')
+             .clip(points);
+
+// ==============================
+// 3. Sentinel-1 VV & VH (SAR) + Rasio
+// ==============================
+var sar = ee.ImageCollection('COPERNICUS/S1_GRD')
+             .filterDate('2021-01-01', '2021-12-31')
+             .filterBounds(points)
+             .filter(ee.Filter.eq('instrumentMode', 'IW'))
+             .filter(ee.Filter.eq('orbitProperties_pass', 'DESCENDING'))
+             .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VV'))
+             .filter(ee.Filter.listContains('transmitterReceiverPolarisation', 'VH'))
+             .select(['VV', 'VH']);
+
+var sar_median = sar.median().rename(['SAR_VV', 'SAR_VH']).clip(points);
+
+// Hitung rasio VV/VH
+var sar_vv = sar_median.select('SAR_VV');
+var sar_vh = sar_median.select('SAR_VH');
+var ratio = sar_vv.divide(sar_vh).rename('SAR_VV_VH_ratio');
+
+// ==============================
+// 4. Gabungkan Semua Citra
+// ==============================
+var finalImage = dem.addBands(sar_vv)
+                    .addBands(sar_vh)
+                    .addBands(ratio);
+
+// ==============================
+// 5. Statistik Zonal Lengkap
+// ==============================
+var reducer = ee.Reducer.mean()
+                .combine(ee.Reducer.median(), '', true)
+                .combine(ee.Reducer.stdDev(), '', true);
+
+var stats = finalImage.reduceRegions({
+  collection: points,
+  reducer: reducer,
+  scale: 30,
+  crs: 'EPSG:4326'
+});
+
+// ==============================
+// 6. Export ke Google Drive
+// ==============================
+Export.table.toDrive({
+  collection: stats,
+  description: 'ZonalStats_DEM_SAR_VV_VH_Ratio',
+  folder: 'EarthEngineExports',
+  fileNamePrefix: 'ZonalStats_DEM_SAR_Ratio_2021',
+  fileFormat: 'CSV'
+});
